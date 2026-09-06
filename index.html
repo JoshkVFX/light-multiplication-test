@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Light Beam Simulator</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="toolbar">
+    <div class="brand">Light Beam Simulator</div>
+    <div class="tools">
+      <button id="addMirror">+ Mirror</button>
+      <button id="addPrism">+ Prism</button>
+      <button id="addLens">+ Lens</button>
+      <button id="addBlocker">+ Blocker</button>
+      <button id="clearAll" class="danger">Clear</button>
+    </div>
+    <div class="tools zoom-group">
+      <button id="zoomOut" title="Zoom out">&minus;</button>
+      <button id="zoomReset" title="Reset view">100%</button>
+      <button id="zoomIn" title="Zoom in">+</button>
+    </div>
+    <div class="hint">
+      Scroll/pinch or +/&minus; to zoom &middot; space-drag or middle-click to pan &middot;
+      drag the ring to rotate, the square to resize &middot; <kbd>Delete</kbd> to remove
+    </div>
+  </div>
+  <canvas id="stage"></canvas>
+  <script src="app.js"></script>
+</body>
+</html>
