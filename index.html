@@ -18,6 +18,10 @@
       <button id="addMeasurer">+ Measurer</button>
       <button id="clearAll" class="danger">Clear</button>
     </div>
+    <div class="tools">
+      <button id="scenesBtn">Scenes</button>
+      <span id="autosaveStatus" class="autosave-status"></span>
+    </div>
     <div class="tools zoom-group">
       <button id="zoomOut" title="Zoom out">&minus;</button>
       <button id="zoomReset" title="Reset view">100%</button>
@@ -42,6 +46,20 @@
       <span class="swatch" id="emSwatch"></span>
       <span class="inspector-note">drag the ring to aim</span>
     </div>
+  </div>
+  <div id="scenesPanel" class="inspector scenes-panel" hidden>
+    <div class="inspector-title">Saved scenes</div>
+    <div class="inspector-row">
+      <input type="text" id="sceneName" placeholder="Scene name" maxlength="60" />
+      <button id="sceneSaveBtn">Save</button>
+    </div>
+    <div id="sceneList" class="scene-list"></div>
+    <div class="inspector-row">
+      <button id="exportBtn">Export .json</button>
+      <button id="importBtn">Import .json</button>
+      <input type="file" id="importFile" accept="application/json" hidden />
+    </div>
+    <div class="inspector-note">Work in progress is autosaved to this browser automatically.</div>
   </div>
   <canvas id="stage"></canvas>
   <script src="app.js"></script>

@@ -566,33 +566,45 @@ function placeDefault(Ctor, extraAngle = 0) {
 
 document.getElementById("addEmitter").onclick = () => {
   objects.push(placeDefault(Emitter));
+  scheduleAutosave();
 };
 document.getElementById("addMirror").onclick = () => {
   objects.push(placeDefault(Mirror));
+  scheduleAutosave();
 };
 document.getElementById("addPrism").onclick = () => {
   objects.push(placeDefault(Prism));
+  scheduleAutosave();
 };
 document.getElementById("addWall").onclick = () => {
   objects.push(placeDefault(Wall));
+  scheduleAutosave();
 };
 document.getElementById("addLens").onclick = () => {
   objects.push(placeDefault(Lens));
+  scheduleAutosave();
 };
 document.getElementById("addMeasurer").onclick = () => {
   objects.push(placeDefault(Measurer));
+  scheduleAutosave();
 };
 document.getElementById("clearAll").onclick = () => {
   objects.length = 0;
   selected = null;
+  scheduleAutosave();
 };
 document.getElementById("zoomIn").onclick = () => {
   zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.4);
+  scheduleAutosave();
 };
 document.getElementById("zoomOut").onclick = () => {
   zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1 / 1.4);
+  scheduleAutosave();
 };
-document.getElementById("zoomReset").onclick = resetView;
+document.getElementById("zoomReset").onclick = () => {
+  resetView();
+  scheduleAutosave();
+};
 
 // ---------------------------------------------------------------------------
 // Emitter inspector: a small panel that appears while an emitter is selected,
@@ -607,11 +619,13 @@ const emSwatch = document.getElementById("emSwatch");
 emWhiteInput.addEventListener("change", () => {
   if (!(selected && selected.type === "emitter")) return;
   selected.wavelength = emWhiteInput.checked ? null : Number(emWavelengthInput.value);
+  scheduleAutosave();
 });
 emWavelengthInput.addEventListener("input", () => {
   if (!(selected && selected.type === "emitter")) return;
   emWhiteInput.checked = false;
   selected.wavelength = Number(emWavelengthInput.value);
+  scheduleAutosave();
 });
 
 function syncInspector() {
@@ -1066,8 +1080,12 @@ function worldPos(evt) {
   return screenToWorld(s.x, s.y);
 }
 
+function isTypingTarget(el) {
+  return el && ["INPUT", "TEXTAREA"].includes(el.tagName);
+}
+
 window.addEventListener("keydown", (evt) => {
-  if (evt.code === "Space" && !spaceDown) {
+  if (evt.code === "Space" && !spaceDown && !isTypingTarget(document.activeElement)) {
     spaceDown = true;
     if (!drag) canvas.style.cursor = "grab";
     evt.preventDefault();
@@ -1159,21 +1177,236 @@ canvas.addEventListener("pointermove", (evt) => {
 
 window.addEventListener("pointerup", () => {
   if (drag && drag.kind === "pan") canvas.style.cursor = spaceDown ? "grab" : "";
+  if (drag) scheduleAutosave();
   drag = null;
 });
 
 window.addEventListener("keydown", (evt) => {
+  if (isTypingTarget(document.activeElement)) return;
   if ((evt.key === "Delete" || evt.key === "Backspace") && selected) {
     const idx = objects.indexOf(selected);
     if (idx >= 0) objects.splice(idx, 1);
     selected = null;
+    scheduleAutosave();
   } else if (evt.key === "+" || evt.key === "=") {
     zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.25);
+    scheduleAutosave();
   } else if (evt.key === "-" || evt.key === "_") {
     zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1 / 1.25);
+    scheduleAutosave();
   } else if (evt.key === "0") {
     resetView();
+    scheduleAutosave();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Save / load: scenes are plain JSON (object list + camera), so they can be
+// autosaved to this browser between sessions, saved under a name for later,
+// or exported/imported as a .json file to move a setup between machines.
+// ---------------------------------------------------------------------------
+const AUTOSAVE_KEY = "lightsim.autosave";
+const SCENES_KEY = "lightsim.scenes";
+
+function serializeScene() {
+  return {
+    version: 1,
+    camera: { zoom: camera.zoom, panX: camera.panX, panY: camera.panY },
+    objects: objects.map(serializeObject),
+  };
+}
+
+function serializeObject(obj) {
+  const base = { type: obj.type, x: obj.x, y: obj.y, angle: obj.angle };
+  if (obj.type === "emitter") base.wavelength = obj.wavelength;
+  if (obj.type === "mirror" || obj.type === "wall" || obj.type === "measurer") base.length = obj.length;
+  if (obj.type === "prism" || obj.type === "lens") base.size = obj.size;
+  return base;
+}
+
+function deserializeObject(d) {
+  if (!d || typeof d.x !== "number" || typeof d.y !== "number") return null;
+  const angle = typeof d.angle === "number" ? d.angle : 0;
+  switch (d.type) {
+    case "emitter":
+      return new Emitter(d.x, d.y, angle, typeof d.wavelength === "number" ? d.wavelength : null);
+    case "mirror":
+      return new Mirror(d.x, d.y, angle, d.length || 160);
+    case "wall":
+      return new Wall(d.x, d.y, angle, d.length || 110);
+    case "measurer":
+      return new Measurer(d.x, d.y, angle, d.length || 100);
+    case "prism":
+      return new Prism(d.x, d.y, angle, d.size || 70);
+    case "lens":
+      return new Lens(d.x, d.y, angle, d.size || 55);
+    default:
+      return null;
+  }
+}
+
+// Replaces the current scene with the given serialized data.
+function loadSceneData(data) {
+  if (!data || !Array.isArray(data.objects)) return false;
+  objects.length = 0;
+  selected = null;
+  for (const d of data.objects) {
+    const obj = deserializeObject(d);
+    if (obj) objects.push(obj);
+  }
+  if (data.camera) {
+    camera.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, data.camera.zoom || 1));
+    camera.panX = data.camera.panX || 0;
+    camera.panY = data.camera.panY || 0;
+    updateZoomLabel();
+  }
+  return true;
+}
+
+let autosaveTimer = null;
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(serializeScene()));
+      flashAutosaveStatus("Saved");
+    } catch {
+      // Storage unavailable (private browsing, quota, etc) -- silently skip.
+    }
+  }, 400);
+}
+
+function loadAutosave() {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+let autosaveStatusTimer = null;
+function flashAutosaveStatus(text) {
+  const el = document.getElementById("autosaveStatus");
+  if (!el) return;
+  el.textContent = text;
+  clearTimeout(autosaveStatusTimer);
+  autosaveStatusTimer = setTimeout(() => {
+    el.textContent = "";
+  }, 1500);
+}
+
+function loadNamedScenes() {
+  try {
+    return JSON.parse(localStorage.getItem(SCENES_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+function saveNamedScenes(index) {
+  try {
+    localStorage.setItem(SCENES_KEY, JSON.stringify(index));
+  } catch {
+    // Storage unavailable -- the save UI just won't persist between visits.
+  }
+}
+
+const scenesPanel = document.getElementById("scenesPanel");
+const sceneNameInput = document.getElementById("sceneName");
+const sceneList = document.getElementById("sceneList");
+
+document.getElementById("scenesBtn").onclick = () => {
+  scenesPanel.hidden = !scenesPanel.hidden;
+  if (!scenesPanel.hidden) {
+    inspector.hidden = true;
+    renderSceneList();
+  }
+};
+
+function renderSceneList() {
+  const index = loadNamedScenes();
+  const names = Object.keys(index).sort((a, b) => a.localeCompare(b));
+  sceneList.innerHTML = "";
+  if (names.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "inspector-note";
+    empty.textContent = "No saved scenes yet.";
+    sceneList.appendChild(empty);
+    return;
+  }
+  for (const name of names) {
+    const row = document.createElement("div");
+    row.className = "scene-item";
+
+    const label = document.createElement("span");
+    label.className = "scene-item-name";
+    label.textContent = name;
+    label.title = `Load "${name}"`;
+    row.appendChild(label);
+
+    const del = document.createElement("button");
+    del.textContent = "×";
+    del.title = `Delete "${name}"`;
+    del.onclick = (evt) => {
+      evt.stopPropagation();
+      const idx = loadNamedScenes();
+      delete idx[name];
+      saveNamedScenes(idx);
+      renderSceneList();
+    };
+    row.appendChild(del);
+
+    row.onclick = () => {
+      loadSceneData(index[name]);
+      scenesPanel.hidden = true;
+      scheduleAutosave();
+    };
+    sceneList.appendChild(row);
+  }
+}
+
+document.getElementById("sceneSaveBtn").onclick = () => {
+  const name = sceneNameInput.value.trim();
+  if (!name) return;
+  const index = loadNamedScenes();
+  index[name] = serializeScene();
+  saveNamedScenes(index);
+  sceneNameInput.value = "";
+  renderSceneList();
+};
+sceneNameInput.addEventListener("keydown", (evt) => {
+  if (evt.key === "Enter") document.getElementById("sceneSaveBtn").click();
+});
+
+document.getElementById("exportBtn").onclick = () => {
+  const blob = new Blob([JSON.stringify(serializeScene(), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.download = `light-scene-${stamp}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+const importFileInput = document.getElementById("importFile");
+document.getElementById("importBtn").onclick = () => importFileInput.click();
+importFileInput.addEventListener("change", () => {
+  const file = importFileInput.files[0];
+  importFileInput.value = "";
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!loadSceneData(data)) throw new Error("not a scene file");
+      scenesPanel.hidden = true;
+      scheduleAutosave();
+    } catch {
+      alert("That file doesn't look like a light-scene export.");
+    }
+  };
+  reader.readAsText(file);
 });
 
 // ---------------------------------------------------------------------------
@@ -1211,7 +1444,8 @@ function boot() {
     return;
   }
   resize();
-  seedScene();
+  const auto = loadAutosave();
+  if (!auto || !loadSceneData(auto)) seedScene();
   updateZoomLabel();
   loop();
 }
