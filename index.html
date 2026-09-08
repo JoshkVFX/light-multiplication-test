@@ -10,10 +10,12 @@
   <div id="toolbar">
     <div class="brand">Light Beam Simulator</div>
     <div class="tools">
+      <button id="addEmitter">+ Emitter</button>
       <button id="addMirror">+ Mirror</button>
       <button id="addPrism">+ Prism</button>
       <button id="addLens">+ Lens</button>
-      <button id="addBlocker">+ Blocker</button>
+      <button id="addWall">+ Wall</button>
+      <button id="addMeasurer">+ Measurer</button>
       <button id="clearAll" class="danger">Clear</button>
     </div>
     <div class="tools zoom-group">
@@ -24,6 +26,21 @@
     <div class="hint">
       Scroll/pinch or +/&minus; to zoom &middot; space-drag or middle-click to pan &middot;
       drag the ring to rotate, the square to resize &middot; <kbd>Delete</kbd> to remove
+    </div>
+  </div>
+  <div id="inspector" class="inspector" hidden>
+    <div class="inspector-title">Emitter wavelength</div>
+    <label class="inspector-row">
+      <input type="checkbox" id="emWhite" checked />
+      White (full spectrum)
+    </label>
+    <div class="inspector-row">
+      <input type="range" id="emWavelength" min="380" max="700" step="1" value="550" />
+      <span id="emWavelengthLabel">550 nm</span>
+    </div>
+    <div class="inspector-row">
+      <span class="swatch" id="emSwatch"></span>
+      <span class="inspector-note">drag the ring to aim</span>
     </div>
   </div>
   <canvas id="stage"></canvas>

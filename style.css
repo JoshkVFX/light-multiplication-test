@@ -119,6 +119,54 @@ html, body {
   cursor: default;
 }
 
+.inspector {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  z-index: 10;
+  width: 230px;
+  background: rgba(19, 26, 41, 0.92);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  backdrop-filter: blur(6px);
+  font-size: 13px;
+}
+
+.inspector-title {
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.inspector-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.inspector-row:last-child {
+  margin-bottom: 0;
+}
+
+.inspector input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.inspector-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+}
+
 @media (max-width: 800px) {
   .hint { display: none; }
 }

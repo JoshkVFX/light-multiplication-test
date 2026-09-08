@@ -1,8 +1,10 @@
 // ---------------------------------------------------------------------------
 // Light Beam Simulator
-// A small ray-tracer: a lamp emits a beam, mirrors reflect it, prisms refract
-// it and (on first entry) split white light into a spectrum via wavelength-
-// dependent refractive indices (real vector Snell's law).
+// A small ray-tracer: emitters fire a beam (white or a chosen wavelength),
+// mirrors reflect it, prisms refract it (splitting white light into a
+// spectrum via wavelength-dependent refractive indices, real vector Snell's
+// law), lenses refocus it, walls absorb it, and measurers report the
+// wavelength(s) of whatever passes through a point undisturbed.
 // ---------------------------------------------------------------------------
 
 const canvas = document.getElementById("stage");
@@ -153,18 +155,64 @@ function pointInPolygon(p, pts) {
 }
 
 // ---------------------------------------------------------------------------
-// Spectrum: dispersion is modelled with a distinct refractive index per band,
-// red bending least and violet bending most, as in a real glass prism.
+// Wavelength -> colour and wavelength -> refractive index. Every emitter,
+// spectrum band, and measurer reading is derived from these two functions so
+// "set the emitter to 620nm" and "the prism bends 620nm light this much" and
+// "the measurer reads 620nm here" all agree with each other.
 // ---------------------------------------------------------------------------
-const SPECTRUM = [
-  { hex: "#ff3b30", ior: 1.505 },
-  { hex: "#ff9500", ior: 1.512 },
-  { hex: "#ffe600", ior: 1.519 },
-  { hex: "#3ddc55", ior: 1.526 },
-  { hex: "#34aeff", ior: 1.533 },
-  { hex: "#5865f2", ior: 1.540 },
-  { hex: "#b34cff", ior: 1.548 },
-];
+// Approximates the classic visible-spectrum -> RGB conversion (Dan Bruton's
+// algorithm): a smooth hue sweep with intensity fading out near the edges of
+// vision.
+function wavelengthToRGB(wl) {
+  let r = 0,
+    g = 0,
+    b = 0;
+  if (wl < 440) {
+    r = -(wl - 440) / (440 - 380);
+    b = 1;
+  } else if (wl < 490) {
+    g = (wl - 440) / (490 - 440);
+    b = 1;
+  } else if (wl < 510) {
+    g = 1;
+    b = -(wl - 510) / (510 - 490);
+  } else if (wl < 580) {
+    r = (wl - 510) / (580 - 510);
+    g = 1;
+  } else if (wl < 645) {
+    r = 1;
+    g = -(wl - 645) / (645 - 580);
+  } else {
+    r = 1;
+  }
+  let factor;
+  if (wl < 420) factor = 0.3 + (0.7 * (wl - 380)) / (420 - 380);
+  else if (wl < 701) factor = 1;
+  else factor = 0.3 + (0.7 * (780 - wl)) / (780 - 700);
+  factor = Math.max(0, Math.min(1, factor));
+  const gamma = 0.8;
+  const chan = (c) => Math.round(255 * Math.pow(Math.max(0, c) * factor, gamma));
+  return `rgb(${chan(r)}, ${chan(g)}, ${chan(b)})`;
+}
+
+// A simple two-term Cauchy dispersion curve fit so 700nm -> 1.505 and
+// 400nm -> 1.548 (the glass's red/violet bending used throughout).
+const IOR_A = 1.48415;
+const IOR_B = 10216.9;
+function wavelengthToIOR(wl) {
+  return IOR_A + IOR_B / (wl * wl);
+}
+
+// ---------------------------------------------------------------------------
+// Spectrum: dispersion is modelled with a distinct refractive index per band,
+// red bending least and violet bending most, as in a real glass prism. Each
+// band's colour and index both come from its representative wavelength.
+// ---------------------------------------------------------------------------
+const SPECTRUM = [700, 620, 580, 530, 470, 445, 400].map((wavelength) => ({
+  wavelength,
+  color: wavelengthToRGB(wavelength),
+  ior: wavelengthToIOR(wavelength),
+}));
 const DEFAULT_IOR = 1.52;
 const WHITE = "white";
 // Lenses use a single fixed index for every colour (no chromatic aberration),
@@ -177,13 +225,25 @@ const LENS_IOR = 1.5;
 // ---------------------------------------------------------------------------
 let idSeq = 1;
 
-class Lamp {
-  constructor(x, y, angle) {
+// A light source. wavelength === null means "white" (full visible spectrum,
+// split apart by the first prism it hits); otherwise it fires a single
+// monochromatic beam at that wavelength (nm), already coloured and bent
+// as if it were one band of the spectrum.
+class Emitter {
+  constructor(x, y, angle, wavelength = null) {
     this.id = idSeq++;
-    this.type = "lamp";
+    this.type = "emitter";
     this.x = x;
     this.y = y;
     this.angle = angle;
+    this.wavelength = wavelength;
+  }
+  color() {
+    return this.wavelength == null ? WHITE : wavelengthToRGB(this.wavelength);
+  }
+  // An emitter isn't a surface other rays bounce off of.
+  segments() {
+    return [];
   }
   handlePos() {
     return V.add({ x: this.x, y: this.y }, V.scale(V.fromAngle(this.angle), 46));
@@ -290,10 +350,12 @@ class Prism {
   }
 }
 
-class Blocker {
+// A solid wall: light that hits it stops completely (same behaviour as the
+// room's outer boundary, just placeable anywhere).
+class Wall {
   constructor(x, y, angle, length = 110) {
     this.id = idSeq++;
-    this.type = "blocker";
+    this.type = "wall";
     this.x = x;
     this.y = y;
     this.angle = angle;
@@ -305,7 +367,7 @@ class Blocker {
   }
   segments() {
     const [p1, p2] = this.endpoints();
-    return [{ p1, p2, kind: "blocker" }];
+    return [{ p1, p2, kind: "wall" }];
   }
   handlePos() {
     const [, p2] = this.endpoints();
@@ -399,6 +461,55 @@ class Lens {
   }
 }
 
+// A measuring gate: light passes straight through undisturbed, but every ray
+// that crosses it this frame is recorded (colour + wavelength) so its
+// readout can show a single wavelength, or -- if several beams cross it at
+// once, e.g. at a lens's focus point -- all of them combined.
+class Measurer {
+  constructor(x, y, angle, length = 100) {
+    this.id = idSeq++;
+    this.type = "measurer";
+    this.x = x;
+    this.y = y;
+    this.angle = angle;
+    this.length = length;
+  }
+  endpoints() {
+    const half = V.scale(V.fromAngle(this.angle), this.length / 2);
+    return [V.sub({ x: this.x, y: this.y }, half), V.add({ x: this.x, y: this.y }, half)];
+  }
+  segments() {
+    const [p1, p2] = this.endpoints();
+    return [{ p1, p2, kind: "measurer", owner: this }];
+  }
+  handlePos() {
+    const [, p2] = this.endpoints();
+    return V.add(p2, V.scale(V.fromAngle(this.angle), 22));
+  }
+  resizeHandlePos() {
+    const [, p2] = this.endpoints();
+    return p2;
+  }
+  labelAnchor() {
+    return V.add({ x: this.x, y: this.y }, V.scale(V.perp(V.fromAngle(this.angle)), 18));
+  }
+  hitBody(p) {
+    const [p1, p2] = this.endpoints();
+    return distToSegment(p, p1, p2) < 10;
+  }
+  hitHandle(p) {
+    const h = this.handlePos();
+    return Math.hypot(p.x - h.x, p.y - h.y) < 9;
+  }
+  hitResizeHandle(p) {
+    const h = this.resizeHandlePos();
+    return Math.hypot(p.x - h.x, p.y - h.y) < 8;
+  }
+  resize(mouse) {
+    this.length = Math.max(16, 2 * Math.hypot(mouse.x - this.x, mouse.y - this.y));
+  }
+}
+
 function distToSegment(p, a, b) {
   const ab = V.sub(b, a);
   const t = Math.max(0, Math.min(1, V.dot(V.sub(p, a), ab) / (V.dot(ab, ab) || 1)));
@@ -415,11 +526,33 @@ function pointInTriangle(p, a, b, c) {
   return !(hasNeg && hasPos);
 }
 
+// Parses "white" or "rgb(r, g, b)" into [r, g, b].
+function parseColor(c) {
+  if (c === WHITE) return [255, 255, 255];
+  const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(c);
+  return m ? [+m[1], +m[2], +m[3]] : [255, 255, 255];
+}
+
+// Additive colour mix (how the listed beams would look combined at a point).
+function mixColors(colors) {
+  let r = 0,
+    g = 0,
+    b = 0;
+  for (const c of colors) {
+    const [cr, cg, cb] = parseColor(c);
+    r += cr;
+    g += cg;
+    b += cb;
+  }
+  return `rgb(${Math.min(255, r)}, ${Math.min(255, g)}, ${Math.min(255, b)})`;
+}
+
 // ---------------------------------------------------------------------------
 // Scene state
 // ---------------------------------------------------------------------------
-const lamp = new Lamp(140, 140, 0.5);
 const objects = [];
+// Filled in by traceScene each frame: measurer id -> [{ color, wavelength }].
+let lastMeasurements = new Map();
 
 function placeDefault(Ctor, extraAngle = 0) {
   // Drop the new object near the center of whatever is currently on screen,
@@ -431,17 +564,23 @@ function placeDefault(Ctor, extraAngle = 0) {
   return new Ctor(cx, cy, Math.random() * Math.PI + extraAngle);
 }
 
+document.getElementById("addEmitter").onclick = () => {
+  objects.push(placeDefault(Emitter));
+};
 document.getElementById("addMirror").onclick = () => {
   objects.push(placeDefault(Mirror));
 };
 document.getElementById("addPrism").onclick = () => {
   objects.push(placeDefault(Prism));
 };
-document.getElementById("addBlocker").onclick = () => {
-  objects.push(placeDefault(Blocker));
+document.getElementById("addWall").onclick = () => {
+  objects.push(placeDefault(Wall));
 };
 document.getElementById("addLens").onclick = () => {
   objects.push(placeDefault(Lens));
+};
+document.getElementById("addMeasurer").onclick = () => {
+  objects.push(placeDefault(Measurer));
 };
 document.getElementById("clearAll").onclick = () => {
   objects.length = 0;
@@ -454,6 +593,41 @@ document.getElementById("zoomOut").onclick = () => {
   zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1 / 1.4);
 };
 document.getElementById("zoomReset").onclick = resetView;
+
+// ---------------------------------------------------------------------------
+// Emitter inspector: a small panel that appears while an emitter is selected,
+// letting its wavelength (or "white") be set.
+// ---------------------------------------------------------------------------
+const inspector = document.getElementById("inspector");
+const emWhiteInput = document.getElementById("emWhite");
+const emWavelengthInput = document.getElementById("emWavelength");
+const emWavelengthLabel = document.getElementById("emWavelengthLabel");
+const emSwatch = document.getElementById("emSwatch");
+
+emWhiteInput.addEventListener("change", () => {
+  if (!(selected && selected.type === "emitter")) return;
+  selected.wavelength = emWhiteInput.checked ? null : Number(emWavelengthInput.value);
+});
+emWavelengthInput.addEventListener("input", () => {
+  if (!(selected && selected.type === "emitter")) return;
+  emWhiteInput.checked = false;
+  selected.wavelength = Number(emWavelengthInput.value);
+});
+
+function syncInspector() {
+  if (selected && selected.type === "emitter") {
+    inspector.hidden = false;
+    const isWhite = selected.wavelength == null;
+    emWhiteInput.checked = isWhite;
+    emWavelengthInput.disabled = isWhite;
+    const wl = isWhite ? Number(emWavelengthInput.value) || 550 : selected.wavelength;
+    if (!isWhite) emWavelengthInput.value = wl;
+    emWavelengthLabel.textContent = isWhite ? "White" : `${Math.round(wl)} nm`;
+    emSwatch.style.background = isWhite ? "#ffffff" : wavelengthToRGB(wl);
+  } else {
+    inspector.hidden = true;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Ray tracing
@@ -493,15 +667,17 @@ function traceScene(w, h) {
   for (const obj of objects) allSegments.push(...obj.segments());
 
   const drawSegments = [];
-  let rays = [
-    {
-      o: { x: lamp.x, y: lamp.y },
-      d: V.fromAngle(lamp.angle),
-      color: WHITE,
-      ior: 1,
+  const measurements = new Map();
+  let rays = objects
+    .filter((o) => o.type === "emitter")
+    .map((em) => ({
+      o: { x: em.x, y: em.y },
+      d: V.fromAngle(em.angle),
+      color: em.color(),
+      ior: em.wavelength == null ? 1 : wavelengthToIOR(em.wavelength),
+      wavelength: em.wavelength,
       bounces: 0,
-    },
-  ];
+    }));
 
   let guard = 0;
   while (rays.length && guard < MAX_RAYS) {
@@ -524,8 +700,24 @@ function traceScene(w, h) {
       color: ray.color,
     });
 
-    if (closest.seg.kind === "wall" || closest.seg.kind === "blocker") continue;
+    if (closest.seg.kind === "wall") continue;
     if (ray.bounces >= MAX_BOUNCES) continue;
+
+    if (closest.seg.kind === "measurer") {
+      const owner = closest.seg.owner;
+      if (!measurements.has(owner.id)) measurements.set(owner.id, []);
+      measurements.get(owner.id).push({ color: ray.color, wavelength: ray.wavelength });
+      // Passes straight through, completely undisturbed.
+      rays.push({
+        o: V.add(closest.point, V.scale(ray.d, EPS_PUSH)),
+        d: ray.d,
+        color: ray.color,
+        ior: ray.ior,
+        wavelength: ray.wavelength,
+        bounces: ray.bounces + 1,
+      });
+      continue;
+    }
 
     if (closest.seg.kind === "mirror") {
       let n = closest.normal;
@@ -536,6 +728,7 @@ function traceScene(w, h) {
         d: newDir,
         color: ray.color,
         ior: ray.ior,
+        wavelength: ray.wavelength,
         bounces: ray.bounces + 1,
       });
       continue;
@@ -559,6 +752,7 @@ function traceScene(w, h) {
         d: dir,
         color: ray.color,
         ior: ray.ior,
+        wavelength: ray.wavelength,
         bounces: ray.bounces + 1,
       });
       continue;
@@ -585,8 +779,9 @@ function traceScene(w, h) {
           rays.push({
             o: V.add(closest.point, V.scale(dir, EPS_PUSH)),
             d: dir,
-            color: band.hex,
+            color: band.color,
             ior: band.ior,
+            wavelength: band.wavelength,
             bounces: ray.bounces + 1,
           });
         }
@@ -605,12 +800,13 @@ function traceScene(w, h) {
           d: dir,
           color: ray.color,
           ior: rayIor,
+          wavelength: ray.wavelength,
           bounces: ray.bounces + 1,
         });
       }
     }
   }
-  return drawSegments;
+  return { segments: drawSegments, measurements };
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +832,8 @@ function draw() {
     devicePixelRatio * camera.panY
   );
 
-  const segments = traceScene(worldW, worldH);
+  const { segments, measurements } = traceScene(worldW, worldH);
+  lastMeasurements = measurements;
 
   // Beam strokes/glow are sized in *screen* pixels (divided by zoom here so
   // that the world-space lineWidth, once scaled back up by the transform,
@@ -658,29 +855,30 @@ function draw() {
   ctx.shadowBlur = 0;
 
   for (const obj of objects) drawObject(obj);
-  drawLamp();
+  syncInspector();
 }
 
-function drawLamp() {
-  const glowGrad = ctx.createRadialGradient(lamp.x, lamp.y, 2, lamp.x, lamp.y, 34);
-  glowGrad.addColorStop(0, "rgba(255,255,255,0.9)");
+function drawEmitter(obj, isSel) {
+  const color = obj.color();
+  const glowGrad = ctx.createRadialGradient(obj.x, obj.y, 2, obj.x, obj.y, 34);
+  glowGrad.addColorStop(0, color === WHITE ? "rgba(255,255,255,0.9)" : color.replace("rgb(", "rgba(").replace(")", ", 0.85)"));
   glowGrad.addColorStop(1, "rgba(255,255,255,0)");
   ctx.fillStyle = glowGrad;
   ctx.beginPath();
-  ctx.arc(lamp.x, lamp.y, 34, 0, Math.PI * 2);
+  ctx.arc(obj.x, obj.y, 34, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.beginPath();
-  ctx.arc(lamp.x, lamp.y, 14, 0, Math.PI * 2);
-  ctx.fillStyle = "#f4f7ff";
+  ctx.arc(obj.x, obj.y, 14, 0, Math.PI * 2);
+  ctx.fillStyle = color === WHITE ? "#f4f7ff" : color;
   ctx.fill();
   ctx.lineWidth = 2;
-  ctx.strokeStyle = selected === lamp ? "#4fa8ff" : "#8b96b3";
+  ctx.strokeStyle = isSel ? "#4fa8ff" : "#8b96b3";
   ctx.stroke();
 
-  const handle = lamp.handlePos();
+  const handle = obj.handlePos();
   ctx.beginPath();
-  ctx.moveTo(lamp.x, lamp.y);
+  ctx.moveTo(obj.x, obj.y);
   ctx.lineTo(handle.x, handle.y);
   ctx.strokeStyle = "rgba(255,255,255,0.35)";
   ctx.lineWidth = 1.5;
@@ -697,6 +895,10 @@ function drawLamp() {
 
 function drawObject(obj) {
   const isSel = obj === selected;
+  if (obj.type === "emitter") {
+    drawEmitter(obj, isSel);
+    return;
+  }
   if (obj.type === "mirror") {
     const [p1, p2] = obj.endpoints();
     ctx.beginPath();
@@ -742,7 +944,7 @@ function drawObject(obj) {
     ctx.shadowBlur = isSel ? 10 : 3;
     ctx.stroke();
     ctx.shadowBlur = 0;
-  } else if (obj.type === "blocker") {
+  } else if (obj.type === "wall") {
     const [p1, p2] = obj.endpoints();
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);
@@ -751,6 +953,47 @@ function drawObject(obj) {
     ctx.lineWidth = 8;
     ctx.lineCap = "round";
     ctx.stroke();
+  } else if (obj.type === "measurer") {
+    const [p1, p2] = obj.endpoints();
+    ctx.save();
+    ctx.setLineDash([7, 5]);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.strokeStyle = isSel ? "#4fa8ff" : "#2dd4bf";
+    ctx.lineWidth = 3;
+    ctx.shadowColor = "rgba(45,212,191,0.6)";
+    ctx.shadowBlur = isSel ? 10 : 4;
+    ctx.stroke();
+    ctx.restore();
+    ctx.shadowBlur = 0;
+
+    const hits = lastMeasurements.get(obj.id) || [];
+    const anchor = obj.labelAnchor();
+    const text =
+      hits.length === 0
+        ? "no signal"
+        : hits.map((h) => (h.wavelength == null ? "white" : `${Math.round(h.wavelength)}nm`)).join(" + ");
+    ctx.save();
+    ctx.translate(anchor.x, anchor.y);
+    const fontPx = 12 / camera.zoom;
+    ctx.font = `${fontPx}px -apple-system, sans-serif`;
+    ctx.textBaseline = "middle";
+    if (hits.length > 0) {
+      const swatch = mixColors(hits.map((h) => h.color));
+      const sw = fontPx;
+      ctx.fillStyle = swatch;
+      ctx.strokeStyle = "rgba(255,255,255,0.4)";
+      ctx.lineWidth = 1 / camera.zoom;
+      ctx.fillRect(0, -sw / 2, sw, sw);
+      ctx.strokeRect(0, -sw / 2, sw, sw);
+      ctx.fillStyle = "#e8eefc";
+      ctx.fillText(text, sw + 6 / camera.zoom, 0);
+    } else {
+      ctx.fillStyle = "rgba(190,200,220,0.55)";
+      ctx.fillText(text, 0, 0);
+    }
+    ctx.restore();
   } else if (obj.type === "lens") {
     const pts = obj.localOutline();
     ctx.save();
@@ -867,18 +1110,6 @@ canvas.addEventListener("pointerdown", (evt) => {
 
   const p = worldPos(evt);
 
-  // lamp handle / body first (topmost priority for aiming)
-  if (lamp.hitHandle(p)) {
-    drag = { kind: "rotate", target: lamp };
-    selected = lamp;
-    return;
-  }
-  if (lamp.hitBody(p)) {
-    drag = { kind: "move", target: lamp, offset: { x: p.x - lamp.x, y: p.y - lamp.y } };
-    selected = lamp;
-    return;
-  }
-
   for (let i = objects.length - 1; i >= 0; i--) {
     const obj = objects[i];
     if (obj.hitResizeHandle && obj.hitResizeHandle(p)) {
@@ -932,7 +1163,7 @@ window.addEventListener("pointerup", () => {
 });
 
 window.addEventListener("keydown", (evt) => {
-  if ((evt.key === "Delete" || evt.key === "Backspace") && selected && selected !== lamp) {
+  if ((evt.key === "Delete" || evt.key === "Backspace") && selected) {
     const idx = objects.indexOf(selected);
     if (idx >= 0) objects.splice(idx, 1);
     selected = null;
@@ -954,22 +1185,23 @@ function loop() {
 }
 
 // Seed the scene with one of each so the idea is obvious on first load.
-// Positions are fixed offsets from the lamp (not window percentages) so the
-// beam-to-prism geometry -- and therefore the clean dispersion fan -- looks
-// the same regardless of the window's aspect ratio.
+// Positions are fixed offsets from the emitter (not window percentages) so
+// the beam-to-prism geometry -- and therefore the clean dispersion fan --
+// looks the same regardless of the window's aspect ratio.
 function seedScene() {
   const w = window.innerWidth || document.documentElement.clientWidth;
   const h = window.innerHeight || document.documentElement.clientHeight;
 
-  lamp.x = Math.min(150, w * 0.15);
-  lamp.y = Math.min(150, h * 0.2);
-  lamp.angle = 0.6;
+  const emitterX = Math.min(150, w * 0.15);
+  const emitterY = Math.min(150, h * 0.2);
+  const emitterAngle = 0.6;
+  objects.push(new Emitter(emitterX, emitterY, emitterAngle));
 
-  const beamDir = V.fromAngle(lamp.angle);
-  const prismPos = V.add({ x: lamp.x, y: lamp.y }, V.scale(beamDir, 380));
+  const beamDir = V.fromAngle(emitterAngle);
+  const prismPos = V.add({ x: emitterX, y: emitterY }, V.scale(beamDir, 380));
   objects.push(new Prism(prismPos.x, prismPos.y, 0.79));
 
-  objects.push(new Mirror(Math.max(w * 0.78, lamp.x + 560), Math.max(h * 0.22, lamp.y - 20), Math.PI * 0.62));
+  objects.push(new Mirror(Math.max(w * 0.78, emitterX + 560), Math.max(h * 0.22, emitterY - 20), Math.PI * 0.62));
 }
 function boot() {
   const w = window.innerWidth || document.documentElement.clientWidth;
