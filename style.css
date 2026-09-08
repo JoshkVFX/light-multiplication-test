@@ -167,6 +167,89 @@ html, body {
   flex-shrink: 0;
 }
 
+.scenes-panel {
+  right: auto;
+  left: 16px;
+  width: 260px;
+}
+
+.scenes-panel > .inspector-note {
+  margin-top: 10px;
+}
+
+.inspector input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.inspector input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.scenes-panel .tools button {
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.scene-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+
+.scene-list:empty {
+  margin-bottom: 0;
+}
+
+.scene-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.scene-item:hover {
+  background: #1b2438;
+}
+
+.scene-item .scene-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-item button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+
+.scene-item button:hover {
+  color: var(--danger);
+}
+
+.autosave-status {
+  font-size: 12px;
+  color: var(--muted);
+  align-self: center;
+  min-width: 70px;
+}
+
 @media (max-width: 800px) {
   .hint { display: none; }
 }
